@@ -3,8 +3,11 @@
 #include <iomanip>
 #include <string>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <set>
+#include <vector>
+#include <utility>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/adj_list_serialize.hpp>
 #include <boost/property_map/property_map.hpp>
@@ -31,6 +34,9 @@ using std::wcin;
 using std::wcout;
 using std::wcerr;
 using std::wostream;
+using std::numeric_limits;
+using std::vector;
+using std::move;
 
 wostream & print_string(wostream & os, wstring const & s) {
   for(auto i = s.begin(); i != s.end(); i++) {
@@ -98,6 +104,7 @@ public:
 
   rune_graph graph;
   map<wstring, vertex_descriptor> vertex_map;
+  typedef map<wstring, vertex_descriptor>::iterator vertex_map_iterator;
   set<pair<uint64_t, vertex_descriptor>> vertex_counts;
   set<pair<uint64_t, edge_descriptor>> edge_counts;
   uint64_t id;
@@ -105,6 +112,31 @@ public:
   Runes() : id(0) {
     wchar_t c = 0;
     vertex_descriptor n = get_vertex(c);
+  }
+
+  pair<vertex_map_iterator, vertex_map_iterator> starts_with(wstring prefix) {
+    const wstring::value_type max_char = numeric_limits<wstring::value_type>::max();
+
+    pair<vertex_map_iterator, vertex_map_iterator> empty(vertex_map.end(), vertex_map.end());
+    if (prefix.size() == 0) {
+      return empty;
+    }
+    vertex_map_iterator b = vertex_map.lower_bound(prefix);
+    vertex_map_iterator e = vertex_map.end();
+
+    while(prefix.size() > 0) {
+      if (prefix.back() < max_char) {
+        prefix.back() += 1;
+        break;
+      } else {
+        prefix.pop_back();
+      }
+    }
+    if (prefix.size() > 0) {
+      e = vertex_map.lower_bound(prefix);
+    }
+
+    return pair<vertex_map_iterator, vertex_map_iterator>(b, e);
   }
 
   vertex_descriptor guess_one(vertex_descriptor from) {
@@ -135,7 +167,7 @@ public:
     vertex_counts.insert(pair<uint64_t, vertex_descriptor>(count + 1, vertex));
   }
 
-  void tally_edge(vertex_descriptor from, vertex_descriptor to) {
+  edge_descriptor tally_edge(vertex_descriptor from, vertex_descriptor to) {
     edge_descriptor e;
     bool exists;
     tie(e, exists) = edge(from, to, graph);
@@ -150,6 +182,8 @@ public:
       graph[e].count = count + 1;
       edge_counts.insert(pair<uint64_t, edge_descriptor>(count + 1, e));
     }
+
+    return e;
   }
 
   vertex_descriptor get_vertex(wchar_t c) {
@@ -174,22 +208,65 @@ public:
     return vertex;
   }
 
-  vertex_descriptor add_transition(vertex_descriptor from, wchar_t c) {
+  edge_descriptor add_transition(vertex_descriptor from, wchar_t c) {
     if (c == 0) return add_transition(from, wstring());
 
     return add_transition(from, wstring(&c, 1));
   }
 
-  vertex_descriptor add_transition(vertex_descriptor from, wstring const & name) {
+  edge_descriptor add_transition(vertex_descriptor from, wstring const & name) {
     vertex_descriptor to = get_vertex(name);
     tally_vertex(to);
-    tally_edge(from, to);
-
-    return to;
+    return tally_edge(from, to);
   }
+
+  struct Watch {
+    Runes & runes;
+    edge_descriptor edge;
+    vertex_descriptor target_;
+    wstring::iterator target_position;
+    wstring::iterator target_end;
+
+    Watch(Runes & runes, edge_descriptor edge)
+      : edge(edge), runes(runes), target_(boost::target(edge, runes.graph)),
+        target_position(runes.graph[target_].name.begin()),
+        target_end(runes.graph[target_].name.end())
+    { }
+
+    inline bool operator<(Watch const & right) const {
+      if (&runes < &(right.runes)) return true;
+      if (&(right.runes) < &runes) return false;
+      if (edge < right.edge) return true;
+      if (right.edge < edge) return false;
+      if (target_position < right.target_position) return true;
+      return false;
+    }
+
+    vertex_descriptor source() const {
+      return boost::source(edge, runes.graph);
+    }
+    vertex_descriptor target() const {
+      return target_;
+    }
+
+    wchar_t expects() const {
+      return *target_position;
+    }
+
+    inline bool at_end() const {
+      return target_position == target_end;
+    }
+
+    bool advance() {
+      if (at_end()) return false;
+      target_position++;
+      return true;
+    }
+  };
 
   struct Reader {
     vertex_descriptor from;
+    set<Watch> watches;
     Runes & runes;
 
     Reader(Runes & runes, wstring const & start = wstring()) : runes(runes) {
@@ -197,7 +274,40 @@ public:
     }
 
     void read(wchar_t c) {
-      from = runes.add_transition(from, c);
+      set<vertex_descriptor> completed;
+      edge_descriptor e = runes.add_transition(from, c);
+      completed.insert(target(e, runes.graph));
+
+      set<Watch>::iterator i = watches.begin();
+      set<Watch> moved;
+
+      while(i != watches.end()) {
+        Watch w = *i;
+        // wcout << "\nprocessing watch: " << runes.graph[w.source()].name << " --> " << runes.graph[w.target()].name << "\n";
+        i = watches.erase(i);
+
+        if (w.edge == e) {
+          // already took care of it
+        } else if (w.expects() == c) {
+          w.advance();
+          if (w.at_end()) {
+            runes.tally_edge(w.source(), w.target());
+            completed.insert(w.target());
+          } else {
+            moved.insert(w);
+          }
+        }
+      }
+      for(auto k = completed.begin(); k != completed.end(); k++) {
+        rune_graph::out_edge_iterator ebegin, eend;
+        tie(ebegin, eend) = out_edges(*k, runes.graph);
+        for(; ebegin != eend; ebegin++) {
+          moved.insert(Watch(runes, *ebegin));
+        }
+      }
+
+      from = target(e, runes.graph);
+      watches = move(moved);
     }
     wstring guess() {
       return runes.graph[runes.guess_one(from)].name;
@@ -254,4 +364,10 @@ int main(int argc, char * argv[]) {
   }
 
   runes.print_graph(wcout);
+
+  Runes::vertex_map_iterator b, e;
+  wcout << "starts with b:\n";
+  for(tie(b, e) = runes.starts_with(L"b"); b != e; b++) {
+    wcout << b->first << "\n";
+  }
 }
