@@ -208,17 +208,17 @@ public:
     return vertex;
   }
 
-  edge_descriptor add_transition(vertex_descriptor from, wchar_t c) {
-    if (c == 0) return add_transition(from, wstring());
-
-    return add_transition(from, wstring(&c, 1));
-  }
-
-  edge_descriptor add_transition(vertex_descriptor from, wstring const & name) {
-    vertex_descriptor to = get_vertex(name);
-    tally_vertex(to);
-    return tally_edge(from, to);
-  }
+  // edge_descriptor add_transition(vertex_descriptor from, wchar_t c) {
+  //   if (c == 0) return add_transition(from, wstring());
+  //
+  //   return add_transition(from, wstring(&c, 1));
+  // }
+  //
+  // edge_descriptor add_transition(vertex_descriptor from, wstring const & name) {
+  //   vertex_descriptor to = get_vertex(name);
+  //   tally_vertex(to);
+  //   return tally_edge(from, to);
+  // }
 
   struct Watch {
     Runes & runes;
@@ -265,18 +265,35 @@ public:
   };
 
   struct Reader {
-    vertex_descriptor from;
+    set<vertex_descriptor> froms;
     set<Watch> watches;
     Runes & runes;
+    uint64_t learning_minimum;
 
-    Reader(Runes & runes, wstring const & start = wstring()) : runes(runes) {
-      from = runes.get_vertex(start);
+    Reader(Runes & runes, wstring const & start = wstring())
+      : runes(runes), learning_minimum(10)
+    {
+      froms.insert(runes.get_vertex(start));
+      rune_graph::out_edge_iterator ebegin, eend;
+
+      for(auto m = froms.begin(); m != froms.end(); m++) {
+        tie(ebegin, eend) = out_edges(*m, runes.graph);
+        for(; ebegin != eend; ebegin++) {
+          watches.insert(Watch(runes, *ebegin));
+        }
+      }
     }
 
     void read(wchar_t c) {
       set<vertex_descriptor> completed;
-      edge_descriptor e = runes.add_transition(from, c);
-      completed.insert(target(e, runes.graph));
+      set<edge_descriptor> traversed;
+      vertex_descriptor vc = runes.get_vertex(c);
+
+      for(auto m = froms.begin(); m != froms.end(); m++) {
+        edge_descriptor e = runes.tally_edge(*m, vc);
+        completed.insert(vc);
+        traversed.insert(e);
+      }
 
       set<Watch>::iterator i = watches.begin();
       set<Watch> moved;
@@ -286,19 +303,40 @@ public:
         // wcout << "\nprocessing watch: " << runes.graph[w.source()].name << " --> " << runes.graph[w.target()].name << "\n";
         i = watches.erase(i);
 
-        if (w.edge == e) {
+        if (traversed.find(w.edge) != traversed.end()) {
           // already took care of it
         } else if (w.expects() == c) {
           w.advance();
           if (w.at_end()) {
-            runes.tally_edge(w.source(), w.target());
+            edge_descriptor e2 = runes.tally_edge(w.source(), w.target());
             completed.insert(w.target());
+            traversed.insert(e2);
           } else {
             moved.insert(w);
           }
         }
       }
+      for(auto l = traversed.begin(); l != traversed.end(); l++) {
+        if (runes.graph[*l].count >= learning_minimum) {
+          // learn a new symbol
+          vertex_descriptor s = source(*l, runes.graph);
+          vertex_descriptor t = target(*l, runes.graph);
+
+          wstring name = runes.graph[s].name + runes.graph[t].name;
+
+          // does this exist already?
+          auto f = runes.vertex_map.find(name);
+          if (f == runes.vertex_map.end()) {
+            vertex_descriptor n = runes.get_vertex(name);
+            completed.insert(n);
+          } else {
+            completed.insert(f->second);
+          }
+        }
+      }
+
       for(auto k = completed.begin(); k != completed.end(); k++) {
+        runes.tally_vertex(*k);
         rune_graph::out_edge_iterator ebegin, eend;
         tie(ebegin, eend) = out_edges(*k, runes.graph);
         for(; ebegin != eend; ebegin++) {
@@ -306,11 +344,30 @@ public:
         }
       }
 
-      from = target(e, runes.graph);
+      froms = move(completed);
       watches = move(moved);
     }
     wstring guess() {
-      return runes.graph[runes.guess_one(from)].name;
+      set<vertex_descriptor> guesses;
+      for(auto m = froms.begin(); m != froms.end(); m++) {
+        guesses.insert(runes.guess_one(*m));
+      }
+
+      if (guesses.size() == 0) {
+        return wstring();
+      }
+
+      auto i = guesses.begin();
+      vertex_descriptor v = *i++;
+      uint64_t max = runes.graph[v].count;
+
+      for(; i != guesses.end(); i++) {
+        if (runes.graph[*i].count > max) {
+          v = *i;
+          max = runes.graph[*i].count;
+        }
+      }
+      return runes.graph[v].name;
     }
   };
 
