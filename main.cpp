@@ -8,11 +8,14 @@
 #include <set>
 #include <vector>
 #include <utility>
+#include <algorithm>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/adj_list_serialize.hpp>
 #include <boost/property_map/property_map.hpp>
 #include <boost/archive/text_oarchive.hpp>
 #include <boost/archive/text_iarchive.hpp>
+
+#include "trie.hpp"
 
 using boost::graph_traits;
 using boost::tie;
@@ -66,35 +69,44 @@ struct Symbol {
   }
 
   wostream & print_id(wostream & os) const {
-    return os << "id: " << id;
+    return os << "id: " << std::dec << id;
   }
   wostream & print(wostream & os) const {
     print_id(os) << ", name: \"";
-    print_string(os, name) << "\", count: " << count;
+    print_string(os, name) << "\", count: " << std::dec << count;
     return os;
   }
 };
 
 struct Edge {
   uint64_t count;
+  uint64_t rep_symbol_id;
 
-  Edge() : count(0) {}
+  Edge() : count(0), rep_symbol_id(0) {}
+
   template<typename Archive>
   void serialize(Archive & ar, const unsigned int version) {
     ar & count;
   }
 
   wostream & print(wostream & os) const {
-    return os << "count: " << count;
+    return os << "count: " << std::dec << count << " rep_symbol_id: " << std::dec << rep_symbol_id;
   }
 };
 
 wostream & operator<<(wostream & os, Symbol const & symbol) {
-  return os << "{ id: " << symbol.id << ", name: \"" << symbol.name << "\", count: " << symbol.count << " }";
+  return os << "{ id: " << symbol.id << ", name: \"" << symbol.name << "\", count: " << std::dec << symbol.count << " }";
 }
 wostream & operator<<(wostream & os, Edge const & edge) {
-  return os << "{ count: " << edge.count << " }";
+  return os << "{ count: " << std::dec << edge.count << " }";
 }
+
+template<typename T>
+struct FalsePredicate {
+  bool operator()(T const &) const {
+    return false;
+  }
+};
 
 class Runes {
 public:
@@ -208,18 +220,6 @@ public:
     return vertex;
   }
 
-  // edge_descriptor add_transition(vertex_descriptor from, wchar_t c) {
-  //   if (c == 0) return add_transition(from, wstring());
-  //
-  //   return add_transition(from, wstring(&c, 1));
-  // }
-  //
-  // edge_descriptor add_transition(vertex_descriptor from, wstring const & name) {
-  //   vertex_descriptor to = get_vertex(name);
-  //   tally_vertex(to);
-  //   return tally_edge(from, to);
-  // }
-
   struct Watch {
     Runes & runes;
     edge_descriptor edge;
@@ -268,10 +268,9 @@ public:
     set<vertex_descriptor> froms;
     set<Watch> watches;
     Runes & runes;
-    uint64_t learning_minimum;
 
     Reader(Runes & runes, wstring const & start = wstring())
-      : runes(runes), learning_minimum(10)
+      : runes(runes)
     {
       froms.insert(runes.get_vertex(start));
       rune_graph::out_edge_iterator ebegin, eend;
@@ -285,23 +284,29 @@ public:
     }
 
     void read(wchar_t c) {
+      read(c, FalsePredicate<Edge>());
+    }
+
+    template<typename LearningPredicate>
+    void read(wchar_t c, LearningPredicate predicate) {
       set<vertex_descriptor> completed;
       set<edge_descriptor> traversed;
+      set<Watch> moved;
+
       vertex_descriptor vc = runes.get_vertex(c);
+      completed.insert(vc);
 
       for(auto m = froms.begin(); m != froms.end(); m++) {
         edge_descriptor e = runes.tally_edge(*m, vc);
-        completed.insert(vc);
         traversed.insert(e);
       }
 
       set<Watch>::iterator i = watches.begin();
-      set<Watch> moved;
 
       while(i != watches.end()) {
         Watch w = *i;
-        // wcout << "\nprocessing watch: " << runes.graph[w.source()].name << " --> " << runes.graph[w.target()].name << "\n";
         i = watches.erase(i);
+        // wcout << "\nprocessing watch: " << runes.graph[w.source()].name << " --> " << runes.graph[w.target()].name << "\n";
 
         if (traversed.find(w.edge) != traversed.end()) {
           // already took care of it
@@ -310,14 +315,16 @@ public:
           if (w.at_end()) {
             edge_descriptor e2 = runes.tally_edge(w.source(), w.target());
             completed.insert(w.target());
-            traversed.insert(e2);
+            if (runes.graph[e2].rep_symbol_id == 0) {
+              traversed.insert(e2);
+            }
           } else {
             moved.insert(w);
           }
         }
       }
       for(auto l = traversed.begin(); l != traversed.end(); l++) {
-        if (runes.graph[*l].count >= learning_minimum) {
+        if (predicate(runes.graph[*l])) {
           // learn a new symbol
           vertex_descriptor s = source(*l, runes.graph);
           vertex_descriptor t = target(*l, runes.graph);
@@ -328,8 +335,10 @@ public:
           auto f = runes.vertex_map.find(name);
           if (f == runes.vertex_map.end()) {
             vertex_descriptor n = runes.get_vertex(name);
+            runes.graph[*l].rep_symbol_id = runes.graph[n].id;
             completed.insert(n);
           } else {
+            runes.graph[*l].rep_symbol_id = runes.graph[f->second].id;
             completed.insert(f->second);
           }
         }
@@ -402,11 +411,18 @@ public:
   }
 };
 
+struct EdgeLearner {
+  Runes & runes;
+  EdgeLearner(Runes & runes) : runes(runes) {}
+
+  bool operator()(Edge const & edge) const {
+    return edge.count >= 10;
+  }
+};
 
 int main(int argc, char * argv[]) {
-  wcout << "Hello World!\n";
-
   Runes runes;
+  EdgeLearner learner(runes);
   Runes::Reader reader = runes.get_reader();
 
   wchar_t c = 0;
@@ -415,7 +431,7 @@ int main(int argc, char * argv[]) {
     wstring g = reader.guess();
     if (g.size() < 1) wcout << "_";
     else wcout << g;
-    reader.read(c);
+    reader.read(c, learner);
 
     if (c == '\n') wcout << '\n';
   }
@@ -427,4 +443,15 @@ int main(int argc, char * argv[]) {
   for(tie(b, e) = runes.starts_with(L"b"); b != e; b++) {
     wcout << b->first << "\n";
   }
+
+  // Trie trie;
+  // trie.add_word(L"word");
+  // trie.add_word(L"worry");
+  // trie.add_word(L"try");
+  //
+  // wcout << "prefixes of 'worr': " << trie.count_prefixes(L"worr") << "\n";
+  // wcout << "prefixes of 'wor': " << trie.count_prefixes(L"wor") << "\n";
+  // wcout << "prefixes of 't': " << trie.count_prefixes(L"t") << "\n";
+  //
+  // return 0;
 }
