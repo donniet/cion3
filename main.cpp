@@ -9,6 +9,7 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
+#include <cwchar>
 #include <boost/graph/adjacency_list.hpp>
 #include <boost/graph/adj_list_serialize.hpp>
 #include <boost/property_map/property_map.hpp>
@@ -16,6 +17,7 @@
 #include <boost/archive/text_iarchive.hpp>
 
 #include "trie.hpp"
+#include "suffix.hpp"
 
 using boost::graph_traits;
 using boost::tie;
@@ -28,6 +30,7 @@ using boost::add_vertex;
 using boost::vertices;
 using boost::target;
 
+using std::wcslen;
 using std::wstring;
 using std::uint64_t;
 using std::map;
@@ -287,8 +290,8 @@ public:
       read(c, FalsePredicate<Edge>());
     }
 
-    template<typename LearningPredicate>
-    void read(wchar_t c, LearningPredicate predicate) {
+    template<typename EdgeLearningPredicate>
+    void read(wchar_t c, EdgeLearningPredicate predicate) {
       set<vertex_descriptor> completed;
       set<edge_descriptor> traversed;
       set<Watch> moved;
@@ -356,6 +359,7 @@ public:
       froms = move(completed);
       watches = move(moved);
     }
+
     wstring guess() {
       set<vertex_descriptor> guesses;
       for(auto m = froms.begin(); m != froms.end(); m++) {
@@ -421,28 +425,28 @@ struct EdgeLearner {
 };
 
 int main(int argc, char * argv[]) {
-  Runes runes;
-  EdgeLearner learner(runes);
-  Runes::Reader reader = runes.get_reader();
-
-  wchar_t c = 0;
-
-  while(wcin.get(c) && c > 0) {
-    wstring g = reader.guess();
-    if (g.size() < 1) wcout << "_";
-    else wcout << g;
-    reader.read(c, learner);
-
-    if (c == '\n') wcout << '\n';
-  }
-
-  runes.print_graph(wcout);
-
-  Runes::vertex_map_iterator b, e;
-  wcout << "starts with b:\n";
-  for(tie(b, e) = runes.starts_with(L"b"); b != e; b++) {
-    wcout << b->first << "\n";
-  }
+  // Runes runes;
+  // EdgeLearner learner(runes);
+  // Runes::Reader reader = runes.get_reader();
+  //
+  // wchar_t c = 0;
+  //
+  // while(wcin.get(c) && c > 0) {
+  //   wstring g = reader.guess();
+  //   if (g.size() < 1) wcout << "_";
+  //   else wcout << g;
+  //   reader.read(c, learner);
+  //
+  //   if (c == '\n') wcout << '\n';
+  // }
+  //
+  // runes.print_graph(wcout);
+  //
+  // Runes::vertex_map_iterator b, e;
+  // wcout << "starts with b:\n";
+  // for(tie(b, e) = runes.starts_with(L"b"); b != e; b++) {
+  //   wcout << b->first << "\n";
+  // }
 
   // Trie trie;
   // trie.add_word(L"word");
@@ -454,4 +458,21 @@ int main(int argc, char * argv[]) {
   // wcout << "prefixes of 't': " << trie.count_prefixes(L"t") << "\n";
   //
   // return 0;
+
+  wchar_t const * str = L"banana";
+  SuffixArray<wchar_t> suffix(str, str + wcslen(str));
+
+  std::for_each(suffix.word.begin(), suffix.word.end(), [](wchar_t c) {
+    if(c >= 32 && c < 127) {
+      wcout << std::setw(4) << c;
+    } else {
+      wcout << std::setw(4) << std::hex << (unsigned int)c;
+    }
+  });
+  wcout << "\n";
+
+  std::for_each(suffix.suffix_indicies.begin(), suffix.suffix_indicies.end(), [](auto index) {
+    wcout << std::setw(4) << index;
+  });
+  wcout << "\n";
 }
