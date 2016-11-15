@@ -528,7 +528,7 @@ int main(int argc, char * argv[]) {
   runes.print_vertex(wcout, runes.get_vertex(L"a"));
   runes.print_vertex(wcout, runes.get_vertex(L"e"));
 
-  wcout << std::endl << "guessing R -> " << runes.guess(L"R") << std::endl;
+  wcout << std::endl << "guessing R -> " << runes.guess(L"R") << std::endl; 
   wcout << std::endl << "guessing ra -> " << runes.guess(L"ra") << std::endl;
   wcout << std::endl << "guessing t -> " << runes.guess(L"t") << std::endl;
   wcout << std::endl << "guessing th -> " << runes.guess(L"th") << std::endl;
